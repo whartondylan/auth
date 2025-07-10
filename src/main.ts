@@ -25,12 +25,13 @@ import {
 import {
   errorMessage,
   exactlyOneOf,
-  isEmptyDir,
   isPinnedToHead,
-  parseMultilineCSV,
   parseBoolean,
   parseDuration,
+  parseMultilineCSV,
   pinnedToHeadWarning,
+  randomFilename,
+  toPlatformPath,
 } from '@google-github-actions/actions-utils';
 
 import {
@@ -44,7 +45,6 @@ import {
   buildDomainWideDelegationJWT,
   computeProjectID,
   computeServiceAccountEmail,
-  generateCredentialsFilename,
 } from './utils';
 
 const secretsWarning =
@@ -156,30 +156,35 @@ export async function run(logger: Logger) {
         throw new Error('$GITHUB_WORKSPACE is not set');
       }
 
-      // There have been a number of issues where users have not used the
-      // "actions/checkout" step before our action. Our action relies on the
-      // creation of that directory; worse, if a user puts "actions/checkout"
-      // after our action, it will delete the exported credential. This
-      // following code does a small check to see if there are any files in the
-      // directory. It emits a warning if there are no files, since there may be
-      // legitimate use cases for authenticating without checking out the
-      // repository.
-      const githubWorkspaceIsEmpty = await isEmptyDir(githubWorkspace);
-      if (githubWorkspaceIsEmpty) {
-        logger.info(
-          `⚠️ The "create_credentials_file" option is true, but the current ` +
-            `GitHub workspace is empty. Did you forget to use ` +
-            `"actions/checkout" before this step? If you do not intend to ` +
-            `share authentication with future steps in this job, set ` +
-            `"create_credentials_file" to false.`,
-        );
-      }
+      // Generate an output file that is unique, but still coupled to the run
+      // and run attempt.
+      const outputFile = `gha-creds-${randomFilename(8)}.json`;
 
-      // Create credentials file.
-      const outputFile = generateCredentialsFilename();
-      const outputPath = pathjoin(githubWorkspace, outputFile);
-      const credentialsPath = await client.createCredentialsFile(outputPath);
+      // TODO: figure out how to do this path on Windows
+      const hostHomeFolder = '/github/home';
+
+      console.log('\n\n');
+      console.log('\nprocess.env:\n');
+      console.log({ env: process.env });
+      console.log('\n\n');
+
+      // /home/runner/work/_temp/_github_home/gha-creds-<random>.json
+      const startingPoint = process.env.GITHUB_OUTPUT;
+      if (!startingPoint) {
+        throw new Error('$GITHUB_OUTPUT is not set');
+      }
+      const homeRunnerTemp = startingPoint.slice(0, startingPoint.indexOf('_runner_file_commands'));
+      logger.debug(`Found home runner temp: "${homeRunnerTemp}"`);
+
+      const dockerHomeFolder = toPlatformPath(`${homeRunnerTemp}/_github_home`);
+      logger.debug(`Computed GitHub home Docker mount: "${dockerHomeFolder}"`);
+
+      // Create credentials files.
+      const hostHomeOutputPath = pathjoin(hostHomeFolder, outputFile);
+      const credentialsPath = await client.createCredentialsFile(hostHomeOutputPath);
       logger.info(`Created credentials file at "${credentialsPath}"`);
+
+      // TODO: copy to docker path
 
       // Output to be available to future steps.
       setOutput('credentials_file_path', credentialsPath);
